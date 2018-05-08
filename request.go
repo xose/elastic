@@ -6,6 +6,7 @@ package elastic
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"io/ioutil"
@@ -62,18 +63,28 @@ func (r *Request) setBodyString(body string) error {
 
 // setBodyReader writes the body from an io.Reader.
 func (r *Request) setBodyReader(body io.Reader) error {
-	rc, ok := body.(io.ReadCloser)
-	if !ok && body != nil {
-		rc = ioutil.NopCloser(body)
+	if c, ok := body.(io.Closer); ok {
+		// close it at the end, we use the bytebuf instead
+		defer c.Close()
 	}
-	r.Body = rc
+
+	var buf bytes.Buffer
 	if body != nil {
-		switch v := body.(type) {
-		case *strings.Reader:
-			r.ContentLength = int64(v.Len())
-		case *bytes.Buffer:
-			r.ContentLength = int64(v.Len())
+		gw := gzip.NewWriter(&buf)
+		defer gw.Close()
+		if _, err := io.Copy(gw, body); err != nil {
+			return err
 		}
+
+		// need to call Close() explicitly to write the gzip footer
+		if err := gw.Close(); err != nil {
+			return err
+		}
+
+		r.Header.Set("Content-Encoding", "gzip")
 	}
+
+	r.Body = ioutil.NopCloser(&buf)
+	r.ContentLength = int64(buf.Len())
 	return nil
 }
